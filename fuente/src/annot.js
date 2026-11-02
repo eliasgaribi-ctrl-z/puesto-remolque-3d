@@ -40,16 +40,18 @@ export function dim(model, a, b, n, off, text, kind = 'boceto') {
 // Punto de interés: botón sobre el modelo + entrada en la lista de áreas.
 // `n` es la normal de la cara: si la cámara queda detrás, el punto se oculta.
 export function hotspot(model, id, pos, title, body, n = null) {
+  const num = model.hotspots.length + 1;
   const el = document.createElement('button');
   el.type = 'button';
   el.className = 'hs';
-  el.innerHTML = '<span class="dot"></span><span class="t"></span>';
+  el.innerHTML = '<span class="dot" aria-hidden="true"></span><span class="t"></span>';
+  el.querySelector('.dot').textContent = num;
   el.querySelector('.t').textContent = title;
-  el.setAttribute('aria-label', title);
+  el.setAttribute('aria-label', `${num}. ${title}`);
   const obj = new CSS2DObject(el);
   obj.position.copy(pos);
   model.labels.add(obj);
-  const spot = { id, title, body, pos, el, n: n ? n.clone().normalize() : null };
+  const spot = { id, num, title, body, pos, el, n: n ? n.clone().normalize() : null };
   el.addEventListener('click', e => { e.stopPropagation(); model.onHotspot?.(spot); });
   model.hotspots.push(spot);
 }

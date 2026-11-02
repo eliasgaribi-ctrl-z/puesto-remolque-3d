@@ -136,6 +136,8 @@ export function buildPuesto() {
     { id: 'planta', label: 'Planta', pos: [0, 1150, 0.1], tgt: [0, 0, 0] },
   ];
   P.title = 'Puesto de acero inoxidable';
+  // Tres medidas del boceto para el resumen del panel.
+  P.summary = [['Largo', '449.4'], ['Fondo', '70'], ['Vitrina', '55']];
   P.table = [
     ['Módulo de chiles y zanahorias', [['Largo', '224.7', 'b'], ['Fondo', '70', 'b'], ['Vitrina de vidrio', '55', 'b'], ['Altura de cubierta', '90', 's'], ['Charolas', '8 pzas', 'b']]],
     ['Módulo de quesos', [['Largo', '224.7', 'b'], ['Fondo', '70', 'b'], ['Repisa intermedia, altura', '28', 's'], ['Repisa intermedia, fondo', '25', 's']]],

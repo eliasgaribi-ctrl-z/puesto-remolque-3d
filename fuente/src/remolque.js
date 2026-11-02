@@ -196,6 +196,8 @@ export function buildRemolque() {
     { id: 'planta', label: 'Planta', pos: [0, 1250, 0.1], tgt: [0, 0, 0] },
   ];
   R.title = 'Remolque con barra';
+  // Tres medidas del boceto para el resumen del panel.
+  R.summary = [['Largo total', '470'], ['Caja', '320'], ['Barra', '60']];
   R.table = [
     ['Medidas generales', [['Largo total con lanza', '470', 'b'], ['Largo de la caja', '320', 'b'], ['Ancho de la caja', '200', 's'], ['Alto de la caja', '210', 's'], ['Altura del piso', '50', 's']]],
     ['Servicio', [['Ventana de servicio, ancho', '120', 'b'], ['Ventana de servicio, alto', '90', 's'], ['Repisa abatible trasera', '40', 'b']]],

@@ -42,7 +42,7 @@ function ensureModel(key) {
   });
   mergeStatic(m.geo);
   m.geo.traverse(o => { if (o.isMesh) original.set(o, o.material); });
-  m.onHotspot = spot => focusArea(m, spot);
+  m.onHotspot = spot => { if (state.model === m.key) focusArea(m, spot); };
   // Las etiquetas HTML no heredan lo oculto del modelo: se esconden una por una hasta mostrarlo.
   m.root.visible = false;
   m.root.traverse(o => { if (o.isCSS2DObject) o.visible = false; });
@@ -166,10 +166,14 @@ function goView(m, view, dur) {
   state.view = view.id;
   renderViews();
 }
-function focusArea(m, spot) {
-  state.area = spot.id;
+function markArea(m, spot) {
+  state.area = spot ? spot.id : null;
   for (const h of m.hotspots) h.el.classList.toggle('on', h === spot);
-  $('#areas').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.id === `area-${m.key}-${spot.id}`)));
+  $('#areas').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(!!spot && b.id === `area-${m.key}-${spot.id}`)));
+}
+function focusArea(m, spot, byKey = false) {
+  markArea(m, spot);
+  showAreaCard(m, spot, byKey);
   const tgt = spot.pos.clone().add(m.root.position);
   const dir = camera.position.clone().sub(controls.target).normalize();
   if (dir.y < 0.25) { dir.y = 0.35; dir.normalize(); }
@@ -177,6 +181,51 @@ function focusArea(m, spot) {
   state.view = null;
   renderViews();
 }
+
+// Tarjeta del área sobre el visor, con anterior/siguiente para recorrerlas como en una presentación.
+const card = $('#areaCard');
+let closeTimer = 0;
+function showAreaCard(m, spot, byKey) {
+  const wasOpen = !card.hidden && !card.classList.contains('closing');
+  clearTimeout(closeTimer);
+  card.classList.remove('closing');
+  $('#areaNum').textContent = spot.num;
+  $('#areaTitle').textContent = spot.title;
+  $('#areaBody').textContent = spot.body;
+  $('#areaCount').textContent = `${spot.num} / ${m.hotspots.length}`;
+  card.hidden = false;
+  // Al pasar de un área a otra con clic, el texto se funde con un desenfoque breve.
+  // Con teclado no se anima: se repite muchas veces y debe sentirse inmediato.
+  if (wasOpen && !byKey) {
+    for (const el of card.querySelectorAll('.ac-body')) {
+      el.classList.remove('swap');
+      void el.offsetWidth;
+      el.classList.add('swap');
+    }
+  }
+}
+function closeArea() {
+  const m = models[state.model];
+  if (m) markArea(m, null);
+  if (card.hidden) return;
+  card.classList.add('closing');
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => { card.hidden = true; card.classList.remove('closing'); }, reduced ? 0 : 140);
+}
+function stepArea(d, byKey = false) {
+  const m = models[state.model], list = m.hotspots;
+  const i = Math.max(0, list.findIndex(h => h.id === state.area));
+  focusArea(m, list[(i + d + list.length) % list.length], byKey);
+}
+$('#areaClose').addEventListener('click', closeArea);
+$('#areaPrev').addEventListener('click', () => stepArea(-1));
+$('#areaNext').addEventListener('click', () => stepArea(1));
+document.addEventListener('keydown', e => {
+  if (card.hidden || e.target.closest?.('input, textarea')) return;
+  if (e.key === 'Escape') closeArea();
+  if (e.key === 'ArrowRight' && !e.target.closest?.('[role="tablist"]')) stepArea(1, true);
+  if (e.key === 'ArrowLeft' && !e.target.closest?.('[role="tablist"]')) stepArea(-1, true);
+});
 controls.addEventListener('start', () => {
   flight = null;
   state.view = null;
@@ -292,13 +341,23 @@ function renderPanel() {
     else if (a.mover) acts.appendChild(switchBtn(a.id, a.label, moverOn(m, a.mover), v => setMover(m, a.mover, v)));
     else acts.appendChild(switchBtn(a.id, a.label, a.get(), v => { a.set(v); contactDirty(); }));
   }
+  const sum = $('#summary');
+  sum.innerHTML = '';
+  for (const [label, value] of m.summary) {
+    const d = document.createElement('div');
+    d.innerHTML = '<b><small>cm</small></b><span></span>';
+    d.querySelector('b').prepend(value);
+    d.querySelector('span').textContent = label;
+    sum.appendChild(d);
+  }
   const areas = $('#areas');
   areas.innerHTML = '';
   for (const s of m.hotspots) {
     const li = document.createElement('li'), b = document.createElement('button');
     b.type = 'button';
     b.id = `area-${m.key}-${s.id}`;
-    b.innerHTML = '<span class="a-t"></span><span class="a-b"></span>';
+    b.innerHTML = '<span class="n" aria-hidden="true"></span><span class="a-t"></span><span class="a-b"></span>';
+    b.querySelector('.n').textContent = s.num;
     b.querySelector('.a-t').textContent = s.title;
     b.querySelector('.a-b').textContent = s.body;
     b.setAttribute('aria-pressed', String(state.area === s.id));
@@ -327,13 +386,14 @@ function renderPanel() {
   }
   $('#tab-puesto').setAttribute('aria-selected', String(state.model === 'puesto'));
   $('#tab-remolque').setAttribute('aria-selected', String(state.model === 'remolque'));
+  placePill();
 }
 
 function showModel(key, instant = false) {
   if (!builders[key]) key = 'puesto';
   const m = ensureModel(key);
+  closeArea();
   state.model = key;
-  state.area = null;
   for (const x of Object.values(models)) for (const h of x.hotspots) h.el.classList.remove('on');
   syncVisibility();
   renderPanel();
@@ -348,6 +408,49 @@ window.addEventListener('hashchange', () => {
   const k = location.hash.slice(1);
   if (builders[k] && k !== state.model) showModel(k);
 });
+
+// ---------- Pestañas del panel ----------
+// La línea naranja se desliza a la pestaña elegida; flechas izquierda/derecha cambian de pestaña.
+const ptabs = [...document.querySelectorAll('.ptabs [role="tab"]')];
+const ink = $('.ptabs-ink');
+function placeInk() {
+  const b = ptabs.find(t => t.getAttribute('aria-selected') === 'true');
+  if (!b || !b.offsetWidth) return;
+  ink.style.transform = `translateX(${b.offsetLeft + 12}px) scaleX(${(b.offsetWidth - 24) / 100})`;
+}
+// Con teclado el cambio es instantáneo: animar una acción repetida la hace sentir lenta.
+function selectTab(tab, byKey = false) {
+  for (const t of ptabs) {
+    const on = t === tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+  }
+  if (byKey) tab.focus();
+  $('.panes').scrollTop = 0;
+  ink.classList.toggle('instant', byKey);
+  placeInk();
+  if (byKey) requestAnimationFrame(() => ink.classList.remove('instant'));
+}
+
+// Píldora del selector Puesto/Remolque: se desliza bajo la opción elegida.
+const pill = $('.tabs-pill');
+function placePill() {
+  const b = document.querySelector('.tabs [aria-selected="true"]');
+  if (!b || !b.offsetWidth) return;
+  pill.style.width = b.offsetWidth + 'px';
+  pill.style.transform = `translateX(${b.offsetLeft}px)`;
+}
+new ResizeObserver(placePill).observe($('.tabs'));
+ptabs.forEach((t, i) => {
+  t.tabIndex = t.getAttribute('aria-selected') === 'true' ? 0 : -1;
+  t.addEventListener('click', () => selectTab(t));
+  t.addEventListener('keydown', e => {
+    const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    if (d) { e.preventDefault(); selectTab(ptabs[(i + d + ptabs.length) % ptabs.length], true); }
+  });
+});
+new ResizeObserver(placeInk).observe($('.ptabs'));
 
 $('#show').append(
   switchBtn('sw-cotas', 'Cotas', state.dims, v => { state.dims = v; syncVisibility(); }),
@@ -529,7 +632,12 @@ fontsReady.then(() => { fontTextures.forEach(t => t.userData.redraw()); invalida
 Promise.all([renderer.compileAsync(scene, camera).catch(() => {}), fontsReady]).then(() => {
   invalidate();
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    $('#loading').hidden = true;
+    // La pantalla de carga se desvanece en vez de desaparecer de golpe.
+    const loading = $('#loading');
+    loading.classList.add('done');
+    setTimeout(() => { loading.hidden = true; }, 320);
+    placeInk();
+    placePill();
     document.documentElement.classList.add('ready');
     prepareOthers();
   }));
