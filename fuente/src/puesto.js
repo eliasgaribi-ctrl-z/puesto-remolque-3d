@@ -129,15 +129,15 @@ export function buildPuesto() {
   hotspot(P, 'frente', V(L * 1.5, 47, D + 2), 'Frente al cliente', 'Lámina, franja de vidrio y lámina, con el logo del cliente al centro de cada módulo.', V(0, 0, 1));
 
   P.views = [
-    { id: 'iso', label: '3/4', pos: [430, 360, 690], tgt: [0, 70, 0] },
-    { id: 'frente', label: 'Frente', pos: [0, 120, 880], tgt: [0, 80, 0] },
-    { id: 'trabajo', label: 'Lado de trabajo', pos: [-260, 300, -700], tgt: [0, 80, 0] },
-    { id: 'costado', label: 'Costado', pos: [920, 170, 60], tgt: [0, 80, 0] },
-    { id: 'planta', label: 'Planta', pos: [0, 1150, 0.1], tgt: [0, 0, 0] },
+    { id: 'iso', label: '3/4', title: 'Vista 3/4', pos: [430, 360, 690], tgt: [0, 70, 0] },
+    { id: 'frente', label: 'Frente', title: 'Vista de frente', pos: [0, 120, 880], tgt: [0, 80, 0] },
+    { id: 'trabajo', label: 'Trabajo', title: 'Vista del lado de trabajo', pos: [-260, 300, -700], tgt: [0, 80, 0] },
+    { id: 'costado', label: 'Costado', title: 'Vista de costado', pos: [920, 170, 60], tgt: [0, 80, 0] },
+    { id: 'planta', label: 'Arriba', title: 'Vista desde arriba (planta)', pos: [0, 1150, 0.1], tgt: [0, 0, 0] },
   ];
   P.title = 'Puesto de acero inoxidable';
-  // Tres medidas del boceto para el resumen del panel.
-  P.summary = [['Largo', '449.4'], ['Fondo', '70'], ['Vitrina', '55']];
+  // Resumen de la pestaña Medidas: la medida principal y tres del boceto.
+  P.summary = { label: 'Largo total', value: '449.4', note: 'cm · 2 módulos', stats: [['Fondo', '70'], ['Vitrina', '55'], ['Mueble', '80 × 88']] };
   P.table = [
     ['Módulo de chiles y zanahorias', [['Largo', '224.7', 'b'], ['Fondo', '70', 'b'], ['Vitrina de vidrio', '55', 'b'], ['Altura de cubierta', '90', 's'], ['Charolas', '8 pzas', 'b']]],
     ['Módulo de quesos', [['Largo', '224.7', 'b'], ['Fondo', '70', 'b'], ['Repisa intermedia, altura', '28', 's'], ['Repisa intermedia, fondo', '25', 's']]],
@@ -148,9 +148,17 @@ export function buildPuesto() {
   P.finishRole = 'lamina';
   P.finishMats = { inox: M.inox, blanco: M.white };
   P.actions = [
-    { id: 'act-puerta', type: 'switch', label: 'Abrir puerta del mueble', mover: 'puerta' },
-    { id: 'act-frente', type: 'seg', label: 'Acabado del frente', options: [['inox', 'Inox'], ['blanco', 'Blanco']], finish: true },
+    { id: 'act-frente', type: 'seg', label: 'Frente del puesto', options: [['inox', 'Inox'], ['blanco', 'Blanco']], finish: true },
+    { id: 'act-puerta', type: 'switch', label: 'Puerta del mueble de rebanadoras', states: ['Cerrada', 'Abierta'], mover: 'puerta' },
   ];
+  // Acción que ofrece cada parada del recorrido.
+  P.spotActions = {
+    chiles: { kind: 'dims', label: 'Ver medidas del módulo' },
+    quesos: { kind: 'dims', label: 'Ver medidas del módulo' },
+    rebanadoras: { kind: 'action', id: 'act-puerta', on: 'Cerrar la puerta del mueble', off: 'Abrir la puerta del mueble' },
+    repisa: { kind: 'view', id: 'planta', label: 'Verla desde arriba' },
+    frente: { kind: 'tab', id: 'acabado', label: 'Cambiar el acabado' },
+  };
   return P;
 }
 

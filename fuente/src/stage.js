@@ -303,10 +303,28 @@ export function setQuality(name, byUser = false) {
 }
 let qualityReady = false;
 
-let size = { w: 1, h: 1 };
+// El panel flota sobre el visor en pantallas anchas. La cámara se recorre con un "view offset"
+// para que el centro de la imagen quede en la parte visible y el modelo no se esconda detrás.
+const panelEl = document.querySelector('.panel');
+const isFullscreen = () => document.fullscreenElement === stageEl || document.webkitFullscreenElement === stageEl
+  || document.body.classList.contains('stage-max');
+function measureInset(r) {
+  if (!panelEl || isFullscreen()) return 0;
+  const pos = getComputedStyle(panelEl).position;
+  if (pos !== 'absolute' && pos !== 'fixed') return 0;
+  const p = panelEl.getBoundingClientRect();
+  if (p.bottom <= r.top || p.top >= r.bottom) return 0;
+  return Math.round(Math.max(0, Math.min(r.width * 0.6, r.right - p.left)));
+}
+
+let size = { w: 1, h: 1 }, inset = 0, visAspect = 1;
+// Parte del ancho que tapa el panel (0 a 1) y proporción de lo que sí se ve.
+export const coveredFraction = () => inset / size.w;
+export const visibleAspect = () => visAspect;
 export function resize() {
   const r = stageEl.getBoundingClientRect();
   size = { w: Math.max(1, Math.floor(r.width)), h: Math.max(1, Math.floor(r.height)) };
+  inset = measureInset(r);
   const q = QUALITY[quality.name];
   const pr = Math.max(1, Math.min(window.devicePixelRatio || 1, q.maxPR, Math.sqrt((q.budget * 1e6) / (size.w * size.h))));
   renderer.setPixelRatio(pr);
@@ -314,15 +332,21 @@ export function resize() {
   composer.setPixelRatio(pr);
   composer.setSize(size.w, size.h);
   labelRenderer.setSize(size.w, size.h);
-  const prev = camera.aspect;
-  camera.aspect = size.w / size.h;
+  const prev = visAspect;
+  visAspect = (size.w - inset) / size.h;
+  // Cuadro virtual más ancho (lo visible + lo tapado a cada lado): su centro cae en la parte visible.
+  camera.aspect = (size.w + inset) / size.h;
+  if (inset > 0) camera.setViewOffset(size.w + inset, size.h, inset, 0, size.w, size.h);
+  else camera.clearViewOffset();
   camera.updateProjectionMatrix();
-  if (Math.abs(prev - camera.aspect) > 0.01) resizeHooks.forEach(fn => fn());
+  if (Math.abs(prev - visAspect) > 0.01) resizeHooks.forEach(fn => fn());
   invalidate();
 }
 const resizeHooks = [];
 export const onResize = fn => resizeHooks.push(fn);
-new ResizeObserver(resize).observe(stageEl);
+const ro = new ResizeObserver(() => resize());
+ro.observe(stageEl);
+if (panelEl) ro.observe(panelEl);
 
 let frames = 0, lastMotion = -1e9;
 export const invalidate = (n = 2) => { frames = Math.max(frames, n); };
@@ -377,10 +401,15 @@ export function start() {
 
 // Foto en alta resolución del encuadre actual (sin etiquetas HTML). Se limita al máximo que
 // soporta la tarjeta de video; en celular sale más chica para no agotar la memoria.
+// La foto sale con la proporción de lo que se ve (sin la parte que tapa el panel) y el modelo al centro.
 export function capture(longSide = coarse ? 1920 : 2560) {
   longSide = Math.min(longSide, renderer.capabilities.maxTextureSize, 4096);
-  const k = longSide / Math.max(size.w, size.h);
-  const W = Math.round(size.w * k), H = Math.round(size.h * k);
+  const vw = size.w - inset;
+  const k = longSide / Math.max(vw, size.h);
+  const W = Math.round(vw * k), H = Math.round(size.h * k);
+  camera.clearViewOffset();
+  camera.aspect = vw / size.h;
+  camera.updateProjectionMatrix();
   renderer.setPixelRatio(1);
   renderer.setSize(W, H, false);
   composer.setPixelRatio(1);

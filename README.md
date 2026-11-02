@@ -18,14 +18,14 @@ Propuesta de diseño en 3D de un **puesto de acero inoxidable** y un **remolque 
 
 ## Qué se puede hacer en el visor
 
-- **Girar, acercar y mover** el modelo con el mouse o con los dedos.
-- **Vistas rápidas**: 3/4, frente, costado, planta y más.
-- **Mover piezas**: abrir la puerta del mueble, subir y bajar las tapas de las ventanas, bajar la repisa trasera.
-- **Cambiar acabados**: frente inox o blanco en el puesto; caja blanca, grafito o inox en el remolque.
-- **Cotas** sobre el modelo y tabla de medidas en cm. Las medidas marcadas como *supuesto* se confirman antes de fabricar.
-- **Foto HD**: descarga una imagen en alta resolución de la vista actual. En el celular abre el menú de compartir (WhatsApp, correo, etc.).
-- **Funciona en laptop y teléfono**: la calidad se ajusta sola al equipo (y baja si se traba); también se puede elegir Alta, Media o Ligera. En el celular se puede usar acostado y en pantalla completa.
-- **Modelo .glb**: descarga el modelo 3D para abrirlo en otros programas.
+- **Girar, acercar y mover** el modelo con el mouse o con los dedos. La primera vez aparece una tarjeta que explica cómo; se vuelve a abrir con el botón **?**.
+- **Recorrido**: cada área tiene un número en el modelo y en el panel. Con **Siguiente** (o las flechas del teclado) se pasa de una a otra, y cada parada trae su acción: abrir la puerta, ver las medidas del módulo, cambiar el acabado…
+- **Vistas rápidas** en la barra de abajo: 3/4, frente, costado, desde arriba y más. Cada botón dibuja desde dónde se ve.
+- **Medidas**: el largo total y las medidas clave arriba, las que faltan por confirmar marcadas aparte, y las cotas sobre el modelo con un clic. Las medidas *por confirmar* se validan antes de fabricar.
+- **Acabado**: frente inox o blanco en el puesto; caja blanca, grafito o inox en el remolque. También se abren puertas y tapas, se baja la repisa y se muestran u ocultan los bancos.
+- **Compartir**: foto HD de la vista actual (en el celular abre el menú de compartir), enlace directo al modelo y descarga del modelo 3D en `.glb`.
+- **Modo técnico** (maqueta blanca con aristas), **tema claro u oscuro** y **calidad** Alta, Media o Ligera; la calidad baja sola si el equipo se traba.
+- **Funciona en laptop y teléfono**: en pantallas grandes el panel flota a un lado del modelo; en el celular baja debajo del visor. También se puede usar acostado y en pantalla completa.
 
 ## Archivos
 

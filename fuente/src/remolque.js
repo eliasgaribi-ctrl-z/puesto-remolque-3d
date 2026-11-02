@@ -189,15 +189,15 @@ export function buildRemolque() {
   hotspot(R, 'puerta', V(270, 160, -6), 'Puerta de acceso', 'Propuesta: no viene en el boceto. Puerta del lado contrario a la ventana, con escalón.', V(0, 0, -1));
 
   R.views = [
-    { id: 'iso', label: '3/4', pos: [470, 340, 680], tgt: [0, 120, 0] },
-    { id: 'lado', label: 'Lado ventana', pos: [0, 160, 860], tgt: [0, 125, 0] },
-    { id: 'barra', label: 'Barra', pos: [-780, 200, 160], tgt: [0, 115, 0] },
-    { id: 'trasera', label: 'Trasera', pos: [780, 210, -200], tgt: [0, 120, 0] },
-    { id: 'planta', label: 'Planta', pos: [0, 1250, 0.1], tgt: [0, 0, 0] },
+    { id: 'iso', label: '3/4', title: 'Vista 3/4', pos: [470, 340, 680], tgt: [0, 120, 0] },
+    { id: 'lado', label: 'Ventana', title: 'Vista del lado de la ventana', pos: [0, 160, 860], tgt: [0, 125, 0] },
+    { id: 'barra', label: 'Barra', title: 'Vista de la barra', pos: [-780, 200, 160], tgt: [0, 115, 0] },
+    { id: 'trasera', label: 'Atrás', title: 'Vista trasera', pos: [780, 210, -200], tgt: [0, 120, 0] },
+    { id: 'planta', label: 'Arriba', title: 'Vista desde arriba (planta)', pos: [0, 1250, 0.1], tgt: [0, 0, 0] },
   ];
   R.title = 'Remolque con barra';
-  // Tres medidas del boceto para el resumen del panel.
-  R.summary = [['Largo total', '470'], ['Caja', '320'], ['Barra', '60']];
+  // Resumen de la pestaña Medidas: la medida principal y tres del boceto.
+  R.summary = { label: 'Largo total', value: '470', note: 'cm con lanza', stats: [['Caja', '320'], ['Barra', '60'], ['Ventana', '120']] };
   R.table = [
     ['Medidas generales', [['Largo total con lanza', '470', 'b'], ['Largo de la caja', '320', 'b'], ['Ancho de la caja', '200', 's'], ['Alto de la caja', '210', 's'], ['Altura del piso', '50', 's']]],
     ['Servicio', [['Ventana de servicio, ancho', '120', 'b'], ['Ventana de servicio, alto', '90', 's'], ['Repisa abatible trasera', '40', 'b']]],
@@ -208,11 +208,19 @@ export function buildRemolque() {
   R.finishRole = 'body';
   R.finishMats = { blanco: M.white, grafito: M.graphite, inox: M.inox };
   R.actions = [
-    { id: 'act-ventanas', type: 'switch', label: 'Ventanas abiertas', mover: 'ventanas' },
-    { id: 'act-repisa', type: 'switch', label: 'Repisa trasera abajo', mover: 'repisa' },
-    { id: 'act-bancos', type: 'switch', label: 'Mostrar bancos', get: () => stools.visible, set: v => { stools.visible = v; } },
     { id: 'act-color', type: 'seg', label: 'Color de la caja', options: [['blanco', 'Blanco'], ['grafito', 'Grafito'], ['inox', 'Inox']], finish: true },
+    { id: 'act-ventanas', type: 'switch', label: 'Tapas de las ventanas', states: ['Cerradas', 'Abiertas'], mover: 'ventanas' },
+    { id: 'act-repisa', type: 'switch', label: 'Repisa trasera', states: ['Arriba', 'Abajo'], mover: 'repisa' },
+    { id: 'act-bancos', type: 'switch', label: 'Bancos', states: ['Ocultos', 'Visibles'], get: () => stools.visible, set: v => { stools.visible = v; } },
   ];
+  // Acción que ofrece cada parada del recorrido.
+  R.spotActions = {
+    ventana: { kind: 'action', id: 'act-ventanas', on: 'Cerrar las tapas', off: 'Abrir las tapas' },
+    barra: { kind: 'action', id: 'act-bancos', on: 'Ocultar los bancos', off: 'Mostrar los bancos' },
+    repisa: { kind: 'action', id: 'act-repisa', on: 'Subir la repisa', off: 'Bajar la repisa' },
+    graficos: { kind: 'tab', id: 'acabado', label: 'Cambiar el color de la caja' },
+    eje: { kind: 'view', id: 'lado', label: 'Ver el costado completo' },
+  };
   return R;
 }
 

@@ -5,6 +5,7 @@ import { mergeStatic, edgesFor } from './merge.js';
 import {
   scene, camera, controls, renderer, stageEl, setGrid, applyTheme, fitLight, fitContact, contactDirty,
   invalidate, onFrame, onResize, start, capture, quality, setQuality, onQuality, coarse,
+  coveredFraction, visibleAspect,
 } from './stage.js';
 import { TECH, fontTextures } from './materials.js';
 import { dimMats } from './annot.js';
@@ -14,6 +15,11 @@ import { buildRemolque } from './remolque.js';
 const $ = s => document.querySelector(s);
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const ease = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
+const ICON = {
+  chev: '<svg class="i chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>',
+  arrow: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+  check: '<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
+};
 
 // Cada modelo se construye cuando se necesita: al abrir solo se arma el que se ve, y el otro
 // se prepara después, en un momento libre, para que cambiar de pestaña sea inmediato.
@@ -42,7 +48,12 @@ function ensureModel(key) {
   });
   mergeStatic(m.geo);
   m.geo.traverse(o => { if (o.isMesh) original.set(o, o.material); });
-  m.onHotspot = spot => { if (state.model === m.key) focusArea(m, spot); };
+  m.onHotspot = spot => {
+    if (state.model !== m.key) return;
+    if (state.area === spot.id) { markArea(m, null); return; }
+    focusArea(m, spot);
+    selectTab(tabFor('recorrido'));
+  };
   // Las etiquetas HTML no heredan lo oculto del modelo: se esconden una por una hasta mostrarlo.
   m.root.visible = false;
   m.root.traverse(o => { if (o.isCSS2DObject) o.visible = false; });
@@ -52,7 +63,11 @@ function ensureModel(key) {
   return m;
 }
 
-const state = { model: 'puesto', view: 'iso', dims: false, labels: true, area: null };
+// Nombres sobre el modelo: encendidos en pantallas grandes con mouse, donde caben sin encimarse.
+const state = {
+  model: 'puesto', view: 'iso', dims: false, area: null,
+  names: matchMedia('(min-width: 1100px) and (pointer: fine)').matches,
+};
 
 // ---------- Piezas móviles y acabados ----------
 function applyMover(mv) {
@@ -78,6 +93,14 @@ function setFinish(m, key) {
   });
   invalidate();
 }
+// Estado de un control de "Acabado" (puerta, tapas, bancos): encendido o apagado.
+const actionOn = (m, a) => (a.mover ? moverOn(m, a.mover) : a.get());
+function setAction(m, a, on) {
+  if (a.mover) setMover(m, a.mover, on);
+  else { a.set(on); contactDirty(); }
+  renderAcabado(m);
+  updateStopActions(m);
+}
 
 // ---------- Modo técnico: maqueta blanca con aristas ----------
 function applyTechnical(m, on) {
@@ -97,10 +120,14 @@ function applyTechnical(m, on) {
 function setTechnical(on) {
   technical = on;
   for (const m of Object.values(models)) applyTechnical(m, on);
+  $('#modo-real').setAttribute('aria-pressed', String(!on));
+  $('#sw-tecnico').setAttribute('aria-pressed', String(on));
   refreshTheme();
 }
+$('#modo-real').addEventListener('click', () => setTechnical(false));
+$('#sw-tecnico').addEventListener('click', () => setTechnical(true));
 
-// ---------- Tema claro / oscuro ----------
+// ---------- Tema claro / oscuro / automático ----------
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const isDark = () => {
   const t = document.documentElement.dataset.theme;
@@ -115,19 +142,25 @@ function refreshTheme() {
   // La barra de estado del celular toma el color del encabezado, también al cambiar de tema a mano.
   const surface = css('--surface');
   if (surface) document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.content = surface; });
+  for (const b of document.querySelectorAll('#tema button')) b.setAttribute('aria-pressed', String(b.dataset.k === themeMode()));
   invalidate();
+}
+const themeMode = () => document.documentElement.dataset.theme || 'auto';
+function setThemeMode(mode) {
+  if (mode === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = mode;
+  try {
+    if (mode === 'auto') localStorage.removeItem('visor-tema');
+    else localStorage.setItem('visor-tema', mode);
+  } catch {}
+  refreshTheme();
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshTheme);
 try {
   const saved = localStorage.getItem('visor-tema');
   if (saved) document.documentElement.dataset.theme = saved;
 } catch {}
-$('#theme').addEventListener('click', () => {
-  const next = isDark() ? 'light' : 'dark';
-  document.documentElement.dataset.theme = next;
-  try { localStorage.setItem('visor-tema', next); } catch {}
-  refreshTheme();
-});
+$('#theme').addEventListener('click', () => setThemeMode(isDark() ? 'light' : 'dark'));
 
 // ---------- Cámara ----------
 let flight = null;
@@ -144,16 +177,18 @@ function flyTo(pos, tgt, dur = 900) {
   invalidate();
 }
 const _v = new THREE.Vector3();
+// Encuadre: el modelo debe caber en la parte del visor que no tapa el panel.
 function fitDistance(m, dir, center) {
-  const corners = m.hull;
-  const cam = camera.clone(), mx = 0.86, my = camera.aspect < 1 ? 0.8 : 0.76;
+  const corners = m.hull, k = coveredFraction();
+  const cx = -k, hw = 1 - k;
+  const cam = camera.clone(), mx = 0.86 * hw, my = visibleAspect() < 1 ? 0.8 : 0.76;
   let lo = 40, hi = 8000;
   for (let i = 0; i < 26; i++) {
     const mid = (lo + hi) / 2;
     cam.position.copy(center).addScaledVector(dir, mid);
     cam.lookAt(center);
     cam.updateMatrixWorld(true);
-    const fits = corners.every(c => { _v.copy(c).project(cam); return Math.abs(_v.x) <= mx && Math.abs(_v.y) <= my && _v.z <= 1; });
+    const fits = corners.every(c => { _v.copy(c).project(cam); return Math.abs(_v.x - cx) <= mx && Math.abs(_v.y) <= my && _v.z <= 1; });
     if (fits) hi = mid; else lo = mid;
   }
   return hi;
@@ -164,73 +199,118 @@ function goView(m, view, dur) {
   const dir = new THREE.Vector3(...view.pos).sub(new THREE.Vector3(...view.tgt)).normalize();
   flyTo(center.clone().addScaledVector(dir, fitDistance(m, dir, center)), center, dur);
   state.view = view.id;
-  renderViews();
+  syncViews();
 }
-function markArea(m, spot) {
-  state.area = spot ? spot.id : null;
-  for (const h of m.hotspots) h.el.classList.toggle('on', h === spot);
-  $('#areas').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(!!spot && b.id === `area-${m.key}-${spot.id}`)));
+// Acercar y alejar con botones, para quien no tiene rueda ni pantalla táctil.
+function zoom(factor) {
+  const off = camera.position.clone().sub(controls.target);
+  const d = THREE.MathUtils.clamp(off.length() * factor, controls.minDistance, controls.maxDistance);
+  flyTo(controls.target.clone().add(off.setLength(d)), controls.target.clone(), 320);
 }
-function focusArea(m, spot, byKey = false) {
-  markArea(m, spot);
-  showAreaCard(m, spot, byKey);
-  const tgt = spot.pos.clone().add(m.root.position);
-  const dir = camera.position.clone().sub(controls.target).normalize();
-  if (dir.y < 0.25) { dir.y = 0.35; dir.normalize(); }
-  flyTo(tgt.clone().add(dir.multiplyScalar(300 * Math.max(1, 1.2 / camera.aspect))), tgt, 850);
-  state.view = null;
-  renderViews();
-}
-
-// Tarjeta del área sobre el visor, con anterior/siguiente para recorrerlas como en una presentación.
-const card = $('#areaCard');
-let closeTimer = 0;
-function showAreaCard(m, spot, byKey) {
-  const wasOpen = !card.hidden && !card.classList.contains('closing');
-  clearTimeout(closeTimer);
-  card.classList.remove('closing');
-  $('#areaNum').textContent = spot.num;
-  $('#areaTitle').textContent = spot.title;
-  $('#areaBody').textContent = spot.body;
-  $('#areaCount').textContent = `${spot.num} / ${m.hotspots.length}`;
-  card.hidden = false;
-  // Al pasar de un área a otra con clic, el texto se funde con un desenfoque breve.
-  // Con teclado no se anima: se repite muchas veces y debe sentirse inmediato.
-  if (wasOpen && !byKey) {
-    for (const el of card.querySelectorAll('.ac-body')) {
-      el.classList.remove('swap');
-      void el.offsetWidth;
-      el.classList.add('swap');
-    }
-  }
-}
-function closeArea() {
+$('#zoomIn').addEventListener('click', () => zoom(0.75));
+$('#zoomOut').addEventListener('click', () => zoom(1 / 0.75));
+$('#center').addEventListener('click', () => {
   const m = models[state.model];
-  if (m) markArea(m, null);
-  if (card.hidden) return;
-  card.classList.add('closing');
-  clearTimeout(closeTimer);
-  closeTimer = setTimeout(() => { card.hidden = true; card.classList.remove('closing'); }, reduced ? 0 : 140);
-}
-function stepArea(d, byKey = false) {
-  const m = models[state.model], list = m.hotspots;
-  const i = Math.max(0, list.findIndex(h => h.id === state.area));
-  focusArea(m, list[(i + d + list.length) % list.length], byKey);
-}
-$('#areaClose').addEventListener('click', closeArea);
-$('#areaPrev').addEventListener('click', () => stepArea(-1));
-$('#areaNext').addEventListener('click', () => stepArea(1));
-document.addEventListener('keydown', e => {
-  if (card.hidden || e.target.closest?.('input, textarea')) return;
-  if (e.key === 'Escape') closeArea();
-  if (e.key === 'ArrowRight' && !e.target.closest?.('[role="tablist"]')) stepArea(1, true);
-  if (e.key === 'ArrowLeft' && !e.target.closest?.('[role="tablist"]')) stepArea(-1, true);
+  goView(m, m.views.find(v => v.id === state.view) || m.views[0]);
 });
 controls.addEventListener('start', () => {
   flight = null;
   state.view = null;
-  $('#views').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', 'false'));
+  syncViews();
 });
+
+// ---------- Recorrido por las áreas ----------
+function focusArea(m, spot, byKey = false) {
+  markArea(m, spot, byKey);
+  const tgt = spot.pos.clone().add(m.root.position);
+  let dir = camera.position.clone().sub(controls.target).normalize();
+  // Si el área queda del otro lado (la puerta del remolque, por ejemplo), la cámara se pone de frente a ella.
+  if (spot.n && dir.dot(spot.n) < 0.2) dir = spot.n.clone().add(new THREE.Vector3(0, 0.45, 0)).normalize();
+  if (dir.y < 0.25) { dir.y = 0.35; dir.normalize(); }
+  flyTo(tgt.clone().add(dir.multiplyScalar(300 * Math.max(1, 1.2 / visibleAspect()))), tgt, 850);
+  state.view = null;
+  syncViews();
+}
+function markArea(m, spot, byKey = false) {
+  const prev = state.area;
+  state.area = spot ? spot.id : null;
+  for (const h of m.hotspots) h.el.classList.toggle('on', h === spot);
+  for (const li of document.querySelectorAll('#areas .stop')) {
+    const on = !!spot && li.dataset.id === spot.id;
+    li.classList.toggle('on', on);
+    li.querySelector('.stop-h').setAttribute('aria-expanded', String(on));
+    const body = li.querySelector('.stop-b');
+    body.hidden = !on;
+    // Al pasar de una parada a otra con clic, el texto se funde con un desenfoque breve.
+    // Con teclado no se anima: se repite muchas veces y debe sentirse inmediato.
+    if (on && prev && prev !== spot.id && !byKey) {
+      body.classList.remove('swap');
+      void body.offsetWidth;
+      body.classList.add('swap');
+    }
+  }
+  renderTourNav(m);
+}
+function stepArea(d, byKey = false) {
+  const m = models[state.model], list = m.hotspots;
+  const i = list.findIndex(h => h.id === state.area);
+  const next = i < 0 ? (d > 0 ? 0 : list.length - 1) : (i + d + list.length) % list.length;
+  focusArea(m, list[next], byKey);
+}
+function renderTourNav(m) {
+  const list = m.hotspots, i = list.findIndex(h => h.id === state.area), n = list.length;
+  $('#tourCount').textContent = i < 0 ? '' : `${i + 1} / ${n}`;
+  $('#tourSegs').querySelectorAll('span').forEach((s, k) => s.classList.toggle('on', k <= i));
+  $('#tourPrev').disabled = i <= 0;
+  const [kicker, title] = i < 0 ? [`${n} paradas`, 'Empezar recorrido']
+    : i === n - 1 ? ['Terminaste', 'Empezar de nuevo']
+    : [`Siguiente · ${i + 2} de ${n}`, list[i + 1].title];
+  $('#tourKicker').textContent = kicker;
+  $('#tourTitle').textContent = title;
+}
+$('#tourPrev').addEventListener('click', () => stepArea(-1));
+$('#tourNext').addEventListener('click', () => {
+  const m = models[state.model], i = m.hotspots.findIndex(h => h.id === state.area);
+  if (i === m.hotspots.length - 1) focusArea(m, m.hotspots[0]);
+  else stepArea(1);
+});
+// Flechas para recorrer las áreas como en una presentación; Esc cierra la parada o la ayuda.
+document.addEventListener('keydown', e => {
+  if (e.target.closest?.('input, textarea, [role="tablist"], [role="group"]')) return;
+  if (e.key === 'Escape') {
+    if (!help.hidden) showHelp(false);
+    else if (state.area) markArea(models[state.model], null);
+    return;
+  }
+  if (!state.area) return;
+  if (e.key === 'ArrowRight') stepArea(1, true);
+  if (e.key === 'ArrowLeft') stepArea(-1, true);
+});
+
+// Acción de cada parada: ver medidas, abrir la puerta, cambiar de vista o ir al acabado.
+function spotActionLabel(m, s) {
+  const a = m.spotActions?.[s.id];
+  if (!a) return null;
+  if (a.kind === 'action') return actionOn(m, m.actions.find(x => x.id === a.id)) ? a.on : a.off;
+  return a.label;
+}
+function runSpotAction(m, s) {
+  const a = m.spotActions?.[s.id];
+  if (!a) return;
+  if (a.kind === 'dims') { setDims(true); selectTab(tabFor('medidas')); }
+  else if (a.kind === 'tab') selectTab(tabFor(a.id));
+  else if (a.kind === 'view') goView(m, m.views.find(v => v.id === a.id) || m.views[0]);
+  else if (a.kind === 'action') {
+    const act = m.actions.find(x => x.id === a.id);
+    setAction(m, act, !actionOn(m, act));
+  }
+}
+function updateStopActions(m) {
+  for (const s of m.hotspots) {
+    const b = document.getElementById(`act-${m.key}-${s.id}`);
+    if (b) b.querySelector('span').textContent = spotActionLabel(m, s);
+  }
+}
 
 onFrame((dt, now) => {
   let busy = false;
@@ -262,19 +342,46 @@ onFrame((dt, now) => {
   return busy;
 });
 
-// ---------- Interfaz ----------
+// ---------- Botones del visor ----------
 function syncVisibility() {
   for (const m of Object.values(models)) {
     const on = m.key === state.model;
     m.root.visible = on;
     m.dims.visible = on && state.dims;
     m.dims.traverse(o => { if (o.isCSS2DObject) o.visible = on && state.dims; });
-    m.labels.traverse(o => { if (o.isCSS2DObject) o.visible = on && state.labels; });
+    m.labels.traverse(o => { if (o.isCSS2DObject) o.visible = on; });
   }
-  $('.legend').hidden = !state.dims;
+  $('#legend').hidden = !state.dims;
   invalidate();
 }
+function setDims(on) {
+  state.dims = on;
+  for (const b of document.querySelectorAll('[data-dims]')) b.setAttribute('aria-pressed', String(on));
+  syncVisibility();
+}
+function setNames(on) {
+  state.names = on;
+  stageEl.classList.toggle('names-on', on);
+  $('#sw-nombres').setAttribute('aria-pressed', String(on));
+}
+function setSpin(on) {
+  controls.autoRotate = on;
+  $('#sw-girar').setAttribute('aria-pressed', String(on));
+  invalidate();
+}
+for (const b of document.querySelectorAll('[data-dims]')) b.addEventListener('click', () => setDims(!state.dims));
+$('#sw-nombres').addEventListener('click', () => setNames(!state.names));
+$('#sw-girar').addEventListener('click', () => setSpin(!controls.autoRotate));
+setNames(state.names);
 
+// Vistas rápidas: el dibujito muestra el puesto visto desde arriba y un punto donde queda la cámara.
+function viewIcon(v) {
+  const dx = v.pos[0] - v.tgt[0], dz = v.pos[2] - v.tgt[2], len = Math.hypot(dx, dz);
+  const [cx, cy] = len < 1 ? [12, 12] : [12 + (dx / len) * 9.5, 12 + (dz / len) * 9.5];
+  const p = n => n.toFixed(1);
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="9" width="14" height="6" rx="1.5"/>`
+    + `<line class="sight" x1="${p(cx)}" y1="${p(cy)}" x2="12" y2="12"/><circle class="cam" cx="${p(cx)}" cy="${p(cy)}" r="2.4"/></svg>`;
+}
 function renderViews() {
   const m = models[state.model], box = $('#views');
   box.innerHTML = '';
@@ -282,108 +389,202 @@ function renderViews() {
     const b = document.createElement('button');
     b.type = 'button';
     b.id = 'view-' + v.id;
-    b.textContent = v.label;
-    b.setAttribute('aria-pressed', String(state.view === v.id));
+    b.innerHTML = viewIcon(v) + '<span></span>';
+    b.querySelector('span').textContent = v.label;
+    b.setAttribute('aria-label', v.title || v.label);
+    b.title = v.title || v.label;
     b.addEventListener('click', () => goView(m, v));
     box.appendChild(b);
   }
+  syncViews();
+}
+function syncViews() {
+  for (const b of document.querySelectorAll('#views button')) b.setAttribute('aria-pressed', String(b.id === 'view-' + state.view));
 }
 
-function switchBtn(id, label, on, set) {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = 'sw';
-  b.id = id;
-  b.setAttribute('aria-pressed', String(on));
-  b.innerHTML = '<span class="sw-l"></span><span class="sw-t" aria-hidden="true"><span></span></span>';
-  b.querySelector('.sw-l').textContent = label;
-  b.addEventListener('click', () => {
-    const v = b.getAttribute('aria-pressed') !== 'true';
-    b.setAttribute('aria-pressed', String(v));
-    set(v);
-  });
-  return b;
+// Ayuda de gestos: se abre sola la primera vez; se cierra con "Entendido", Esc o al mover el modelo.
+const help = $('#help');
+function showHelp(on) {
+  help.hidden = !on;
+  $('#helpBtn').setAttribute('aria-expanded', String(on));
+  if (!on) try { localStorage.setItem('visor-ayuda', '1'); } catch {}
+}
+$('#helpBtn').addEventListener('click', () => showHelp(help.hidden));
+for (const b of document.querySelectorAll('[data-help-close]')) b.addEventListener('click', () => showHelp(false));
+controls.addEventListener('start', () => { if (!help.hidden) showHelp(false); });
+let helpSeen = false;
+try { helpSeen = localStorage.getItem('visor-ayuda') === '1'; } catch {}
+
+// Aviso breve: confirma lo que pasó (foto guardada, enlace copiado) sin tapar el modelo.
+const toastEl = $('#toast');
+let toastTimer = 0;
+function toast(msg) {
+  clearTimeout(toastTimer);
+  toastEl.querySelector('.toast-t').textContent = msg;
+  toastEl.classList.remove('out');
+  toastEl.hidden = false;
+  toastTimer = setTimeout(() => {
+    toastEl.classList.add('out');
+    toastTimer = setTimeout(() => { toastEl.hidden = true; toastEl.classList.remove('out'); }, reduced ? 0 : 160);
+  }, 2600);
 }
 
-function segRow(id, label, options, value, set) {
-  const row = document.createElement('div');
-  row.className = 'segrow';
-  const l = document.createElement('span');
-  l.className = 'segrow-l';
-  l.textContent = label;
-  const seg = document.createElement('div');
-  seg.className = 'mini-seg';
-  seg.setAttribute('role', 'group');
-  seg.setAttribute('aria-label', label);
+// ---------- Panel ----------
+// Botones de opción: uno queda marcado; `pick` recibe la clave elegida.
+function segButtons(box, id, options, value, pick) {
+  box.innerHTML = '';
   for (const [k, text] of options) {
     const b = document.createElement('button');
     b.type = 'button';
     b.id = `${id}-${k}`;
+    b.dataset.k = String(k);
     b.textContent = text;
     b.setAttribute('aria-pressed', String(k === value));
     b.addEventListener('click', () => {
-      seg.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
-      set(k);
+      box.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+      pick(k);
     });
-    seg.appendChild(b);
+    box.appendChild(b);
   }
-  row.append(l, seg);
-  return row;
+  return box;
+}
+function field(label) {
+  const f = document.createElement('div');
+  f.className = 'field';
+  const l = document.createElement('span');
+  l.className = 'field-l';
+  l.textContent = label;
+  f.appendChild(l);
+  return f;
+}
+
+function renderTour(m) {
+  const segs = $('#tourSegs');
+  segs.innerHTML = '<span></span>'.repeat(m.hotspots.length);
+  const list = $('#areas');
+  list.innerHTML = '';
+  for (const s of m.hotspots) {
+    const li = document.createElement('li');
+    li.className = 'stop';
+    li.dataset.id = s.id;
+    const head = document.createElement('button');
+    head.type = 'button';
+    head.className = 'stop-h';
+    head.id = `area-${m.key}-${s.id}`;
+    head.setAttribute('aria-expanded', 'false');
+    head.setAttribute('aria-controls', `stop-${m.key}-${s.id}`);
+    head.innerHTML = `<span class="n" aria-hidden="true"></span><span class="st"></span>${ICON.chev}`;
+    head.querySelector('.n').textContent = s.num;
+    head.querySelector('.st').textContent = s.title;
+    head.addEventListener('click', () => (state.area === s.id ? markArea(m, null) : focusArea(m, s)));
+    const body = document.createElement('div');
+    body.className = 'stop-b';
+    body.id = `stop-${m.key}-${s.id}`;
+    body.hidden = true;
+    const p = document.createElement('p');
+    p.textContent = s.body;
+    body.appendChild(p);
+    const label = spotActionLabel(m, s);
+    if (label) {
+      const act = document.createElement('button');
+      act.type = 'button';
+      act.className = 'stop-act';
+      act.id = `act-${m.key}-${s.id}`;
+      act.innerHTML = `<span></span>${ICON.arrow}`;
+      act.querySelector('span').textContent = label;
+      act.addEventListener('click', () => runSpotAction(m, s));
+      body.appendChild(act);
+    }
+    li.append(head, body);
+    list.appendChild(li);
+  }
+  markArea(m, null);
+}
+
+function renderMedidas(m) {
+  const s = m.summary, hero = $('#hero');
+  hero.innerHTML = '<div><span class="kicker"></span><div class="hero-v"><b></b><span></span></div></div><div class="hero-stats"></div>';
+  hero.querySelector('.kicker').textContent = s.label;
+  hero.querySelector('.hero-v b').textContent = s.value;
+  hero.querySelector('.hero-v span').textContent = s.note;
+  for (const [k, v] of s.stats) {
+    const d = document.createElement('div');
+    d.innerHTML = '<span></span><b></b>';
+    d.querySelector('span').textContent = k;
+    d.querySelector('b').textContent = v;
+    hero.querySelector('.hero-stats').appendChild(d);
+  }
+  const pending = m.table.reduce((n, [, rows]) => n + rows.filter(r => r[2] === 's').length, 0);
+  $('#pending').hidden = pending === 0;
+  $('#pendingTitle').textContent = pending === 1 ? '1 medida por confirmar' : `${pending} medidas por confirmar`;
+  const box = $('#dims');
+  box.innerHTML = '';
+  for (const [group, rows] of m.table) {
+    const sec = document.createElement('section');
+    sec.className = 'dgroup';
+    const h = document.createElement('h3');
+    h.textContent = group;
+    sec.appendChild(h);
+    for (const [k, v, src] of rows) {
+      const r = document.createElement('div');
+      r.className = 'drow';
+      r.innerHTML = '<span class="k"></span>' + (src === 's' ? '<span class="tag">por confirmar</span>' : '') + '<span class="v"></span>';
+      r.querySelector('.k').textContent = k;
+      const val = r.querySelector('.v');
+      val.textContent = v;
+      if (src === 's') val.classList.add('s');
+      sec.appendChild(r);
+    }
+    box.appendChild(sec);
+  }
+}
+
+function renderAcabado(m) {
+  const fin = $('#finishes'), mov = $('#movers');
+  fin.innerHTML = '';
+  mov.innerHTML = '';
+  for (const a of m.actions) {
+    const f = field(a.label);
+    if (a.type === 'seg') {
+      const grid = document.createElement('div');
+      grid.className = 'swatches' + (a.options.length > 2 ? ' n3' : '');
+      grid.setAttribute('role', 'group');
+      grid.setAttribute('aria-label', a.label);
+      for (const [k, text] of a.options) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'swatch';
+        b.id = `${a.id}-${k}`;
+        b.setAttribute('aria-pressed', String(k === m.finish));
+        b.innerHTML = `<span class="swatch-c c-${k}" aria-hidden="true"></span><span class="swatch-l"><span></span><span class="ok" aria-hidden="true">${ICON.check}</span></span>`;
+        b.querySelector('.swatch-l span').textContent = text;
+        b.addEventListener('click', () => {
+          grid.querySelectorAll('.swatch').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+          setFinish(m, k);
+        });
+        grid.appendChild(b);
+      }
+      f.appendChild(grid);
+      fin.appendChild(f);
+    } else {
+      const seg = document.createElement('div');
+      seg.className = 'seg-track';
+      seg.setAttribute('role', 'group');
+      seg.setAttribute('aria-label', a.label);
+      const states = a.states || ['No', 'Sí'];
+      segButtons(seg, a.id, [[false, states[0]], [true, states[1]]], actionOn(m, a), v => setAction(m, a, v));
+      f.appendChild(seg);
+      mov.appendChild(f);
+    }
+  }
 }
 
 function renderPanel() {
   const m = models[state.model];
   $('#modelTitle').textContent = m.title;
-  const acts = $('#actions');
-  acts.innerHTML = '';
-  for (const a of m.actions) {
-    if (a.type === 'seg') acts.appendChild(segRow(a.id, a.label, a.options, m.finish, k => setFinish(m, k)));
-    else if (a.mover) acts.appendChild(switchBtn(a.id, a.label, moverOn(m, a.mover), v => setMover(m, a.mover, v)));
-    else acts.appendChild(switchBtn(a.id, a.label, a.get(), v => { a.set(v); contactDirty(); }));
-  }
-  const sum = $('#summary');
-  sum.innerHTML = '';
-  for (const [label, value] of m.summary) {
-    const d = document.createElement('div');
-    d.innerHTML = '<b><small>cm</small></b><span></span>';
-    d.querySelector('b').prepend(value);
-    d.querySelector('span').textContent = label;
-    sum.appendChild(d);
-  }
-  const areas = $('#areas');
-  areas.innerHTML = '';
-  for (const s of m.hotspots) {
-    const li = document.createElement('li'), b = document.createElement('button');
-    b.type = 'button';
-    b.id = `area-${m.key}-${s.id}`;
-    b.innerHTML = '<span class="n" aria-hidden="true"></span><span class="a-t"></span><span class="a-b"></span>';
-    b.querySelector('.n').textContent = s.num;
-    b.querySelector('.a-t').textContent = s.title;
-    b.querySelector('.a-b').textContent = s.body;
-    b.setAttribute('aria-pressed', String(state.area === s.id));
-    b.addEventListener('click', () => focusArea(m, s));
-    li.appendChild(b);
-    areas.appendChild(li);
-  }
-  const tb = $('#dims');
-  tb.innerHTML = '';
-  for (const [group, rows] of m.table) {
-    const tr = document.createElement('tr');
-    tr.className = 'grp';
-    tr.innerHTML = '<th colspan="3" scope="colgroup"></th>';
-    tr.firstChild.textContent = group;
-    tb.appendChild(tr);
-    for (const [k, v, src] of rows) {
-      const r = document.createElement('tr');
-      r.innerHTML = '<td class="k"></td><td class="v"></td><td class="s"><span class="chip"></span></td>';
-      r.querySelector('.k').textContent = k;
-      r.querySelector('.v').textContent = v;
-      const chip = r.querySelector('.chip');
-      chip.textContent = src === 'b' ? 'Boceto' : 'Supuesto';
-      chip.classList.add(src === 'b' ? 'is-b' : 'is-s');
-      tb.appendChild(r);
-    }
-  }
+  renderTour(m);
+  renderMedidas(m);
+  renderAcabado(m);
   $('#tab-puesto').setAttribute('aria-selected', String(state.model === 'puesto'));
   $('#tab-remolque').setAttribute('aria-selected', String(state.model === 'remolque'));
   placePill();
@@ -392,11 +593,12 @@ function renderPanel() {
 function showModel(key, instant = false) {
   if (!builders[key]) key = 'puesto';
   const m = ensureModel(key);
-  closeArea();
   state.model = key;
+  state.area = null;
   for (const x of Object.values(models)) for (const h of x.hotspots) h.el.classList.remove('on');
   syncVisibility();
   renderPanel();
+  renderViews();
   fitLight(m.box);
   fitContact(m.box, key === 'remolque' ? 190 : 140);
   goView(m, m.views[0], instant ? 0 : 900);
@@ -409,39 +611,33 @@ window.addEventListener('hashchange', () => {
   if (builders[k] && k !== state.model) showModel(k);
 });
 
-// ---------- Pestañas del panel ----------
-// La línea naranja se desliza a la pestaña elegida; flechas izquierda/derecha cambian de pestaña.
+// ---------- Pestañas ----------
+// Una píldora se desliza bajo la pestaña elegida; flechas izquierda/derecha cambian de pestaña.
 const ptabs = [...document.querySelectorAll('.ptabs [role="tab"]')];
-const ink = $('.ptabs-ink');
-function placeInk() {
+const ptabsPill = $('.ptabs-pill');
+const tabFor = id => document.getElementById('pt-' + id);
+function placeTabPill() {
   const b = ptabs.find(t => t.getAttribute('aria-selected') === 'true');
   if (!b || !b.offsetWidth) return;
-  ink.style.transform = `translateX(${b.offsetLeft + 12}px) scaleX(${(b.offsetWidth - 24) / 100})`;
+  ptabsPill.style.width = b.offsetWidth + 'px';
+  ptabsPill.style.transform = `translateX(${b.offsetLeft}px)`;
 }
 // Con teclado el cambio es instantáneo: animar una acción repetida la hace sentir lenta.
 function selectTab(tab, byKey = false) {
+  if (!tab) return;
   for (const t of ptabs) {
     const on = t === tab;
     t.setAttribute('aria-selected', String(on));
     t.tabIndex = on ? 0 : -1;
     document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
   }
+  $('#tourNav').hidden = tab.id !== 'pt-recorrido';
   if (byKey) tab.focus();
   $('.panes').scrollTop = 0;
-  ink.classList.toggle('instant', byKey);
-  placeInk();
-  if (byKey) requestAnimationFrame(() => ink.classList.remove('instant'));
+  ptabsPill.classList.toggle('instant', byKey);
+  placeTabPill();
+  if (byKey) requestAnimationFrame(() => ptabsPill.classList.remove('instant'));
 }
-
-// Píldora del selector Puesto/Remolque: se desliza bajo la opción elegida.
-const pill = $('.tabs-pill');
-function placePill() {
-  const b = document.querySelector('.tabs [aria-selected="true"]');
-  if (!b || !b.offsetWidth) return;
-  pill.style.width = b.offsetWidth + 'px';
-  pill.style.transform = `translateX(${b.offsetLeft}px)`;
-}
-new ResizeObserver(placePill).observe($('.tabs'));
 ptabs.forEach((t, i) => {
   t.tabIndex = t.getAttribute('aria-selected') === 'true' ? 0 : -1;
   t.addEventListener('click', () => selectTab(t));
@@ -450,19 +646,29 @@ ptabs.forEach((t, i) => {
     if (d) { e.preventDefault(); selectTab(ptabs[(i + d + ptabs.length) % ptabs.length], true); }
   });
 });
-new ResizeObserver(placeInk).observe($('.ptabs'));
+new ResizeObserver(placeTabPill).observe($('.ptabs'));
 
-$('#show').append(
-  switchBtn('sw-cotas', 'Cotas', state.dims, v => { state.dims = v; syncVisibility(); }),
-  switchBtn('sw-etiquetas', 'Etiquetas de áreas', state.labels, v => { state.labels = v; syncVisibility(); }),
-  switchBtn('sw-tecnico', 'Modo técnico', false, setTechnical),
-  switchBtn('sw-girar', 'Girar solo', false, v => { controls.autoRotate = v; invalidate(); }),
-  segRow('calidad', 'Calidad', [['alta', 'Alta'], ['media', 'Media'], ['ligera', 'Ligera']], quality.name, k => setQuality(k, true)),
-);
+// Píldora del selector Puesto/Remolque.
+const pill = $('.tabs-pill');
+function placePill() {
+  const b = document.querySelector('.tabs [aria-selected="true"]');
+  if (!b || !b.offsetWidth) return;
+  pill.style.width = b.offsetWidth + 'px';
+  pill.style.transform = `translateX(${b.offsetLeft}px)`;
+}
+new ResizeObserver(placePill).observe($('.tabs'));
+
+// Los controles del visor empiezan debajo del encabezado flotante, mida lo que mida.
+const header = $('.top');
+new ResizeObserver(() => document.documentElement.style.setProperty('--top-h', header.offsetHeight + 'px')).observe(header);
+
+// Ajustes del visor.
+segButtons($('#calidad'), 'calidad', [['alta', 'Alta'], ['media', 'Media'], ['ligera', 'Ligera']], quality.name, k => setQuality(k, true));
 // Si el visor baja la calidad solo (equipo lento), el selector lo refleja.
 onQuality(name => {
-  document.querySelectorAll('#show .mini-seg button').forEach(b => b.setAttribute('aria-pressed', String(b.id === 'calidad-' + name)));
+  document.querySelectorAll('#calidad button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.k === name)));
 });
+segButtons($('#tema'), 'tema', [['light', 'Claro'], ['dark', 'Oscuro'], ['auto', 'Automático']], themeMode(), setThemeMode);
 
 // ---------- Exportar .glb ----------
 function bakeInstances(root) {
@@ -510,18 +716,29 @@ function saveBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 const FILES = { puesto: 'Puesto-inox', remolque: 'Remolque-barra' };
-const dl = $('#download');
+const dl = $('#download'), dlLabel = dl.querySelector('small'), dlText = dlLabel.textContent;
 dl.addEventListener('click', async () => {
   dl.disabled = true;
-  const label = dl.textContent;
-  dl.textContent = 'Preparando archivo…';
+  dlLabel.textContent = 'Preparando archivo…';
   try {
     saveBlob(new Blob([await exportGLB(state.model)], { type: 'model/gltf-binary' }), FILES[state.model] + '.glb');
-    dl.textContent = 'Descargado: ' + FILES[state.model] + '.glb';
+    toast('Descargado: ' + FILES[state.model] + '.glb');
   } catch {
-    dl.textContent = 'No se pudo exportar. Intenta de nuevo.';
+    toast('No se pudo exportar. Intenta de nuevo.');
   }
-  setTimeout(() => { dl.textContent = label; dl.disabled = false; }, 2600);
+  dlLabel.textContent = dlText;
+  dl.disabled = false;
+});
+
+// Enlace directo al modelo que se está viendo.
+$('#copyLink').addEventListener('click', async () => {
+  const url = location.href.split('#')[0] + '#' + state.model;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast('Enlace copiado');
+  } catch {
+    toast('No se pudo copiar. El enlace es: ' + url);
+  }
 });
 
 // ---------- Foto HD ----------
@@ -554,6 +771,7 @@ async function savePhoto(btn) {
       }
     }
     saveBlob(blob, name);
+    toast('Foto guardada: ' + name);
   } finally {
     btn.disabled = false;
   }
@@ -562,9 +780,8 @@ for (const b of document.querySelectorAll('[data-photo]')) {
   b.addEventListener('click', () => savePhoto(b));
   if (canShareFiles) {
     b.setAttribute('aria-label', 'Compartir foto en alta resolución');
-    b.title = 'Compartir foto';
     const label = b.querySelector('.label');
-    if (label) label.textContent = 'Compartir foto';
+    if (label) label.textContent = b.classList.contains('share') ? 'Compartir foto HD' : 'Compartir foto';
   }
 }
 
@@ -588,23 +805,18 @@ for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) {
 }
 document.addEventListener('keydown', e => { if (e.key === 'Escape' && document.body.classList.contains('stage-max')) setFs(false); });
 
-// ---------- Ayuda táctil ----------
-// En pantallas táctiles se explica el gesto una vez; desaparece al primer toque al modelo.
-const hint = $('#touchHint');
-if (coarse && hint) {
-  hint.hidden = false;
-  const hide = () => hint.classList.add('gone');
-  controls.addEventListener('start', hide, { once: true });
-  setTimeout(hide, 6000);
-}
-
 // Para automatizar renders y exportaciones desde la consola.
+const toggles = { 'sw-cotas': setDims, 'sw-tecnico': setTechnical, 'sw-nombres': setNames, 'sw-girar': setSpin };
 window.__studio = {
   photo,
   exportGLB,
   view: id => { const m = models[state.model]; goView(m, m.views.find(v => v.id === id) || m.views[0], 0); },
   show: showModel,
-  set: (id, v) => { const b = document.getElementById(id); if (b && (b.getAttribute('aria-pressed') === 'true') !== v) b.click(); },
+  set: (id, v) => {
+    if (toggles[id]) { toggles[id](v); return; }
+    const m = models[state.model], a = m.actions.find(x => x.id === id);
+    if (a && a.type !== 'seg') setAction(m, a, v);
+  },
   // Piezas y triángulos que dibuja el modelo visible en una pasada (diagnóstico de rendimiento).
   stats: () => {
     renderer.info.autoReset = false;
@@ -622,13 +834,27 @@ refreshTheme();
 start();
 const first = location.hash.slice(1);
 showModel(builders[first] ? first : 'puesto', true);
+selectTab(tabFor('recorrido'));
 // Si la pantalla cambia de proporción (girar el celular), se reencuadra la vista activa.
 onResize(() => {
   const m = models[state.model], v = m.views.find(x => x.id === state.view);
   if (v && !flight) goView(m, v, 0);
 });
-const fontsReady = document.fonts ? Promise.race([document.fonts.ready, new Promise(r => setTimeout(r, 2500))]) : Promise.resolve();
-fontsReady.then(() => { fontTextures.forEach(t => t.userData.redraw()); invalidate(); });
+// La interfaz no usa Barlow Condensed, pero el logo y los números de las charolas sí: se pide aparte
+// y se vuelven a dibujar esas texturas en cuanto llega, aunque sea después de la pantalla de carga.
+const fontSheet = document.querySelector('link[data-fonts]');
+const sheetReady = new Promise(r => {
+  if (!fontSheet || fontSheet.sheet) r();
+  else { fontSheet.addEventListener('load', r, { once: true }); fontSheet.addEventListener('error', r, { once: true }); }
+});
+const canvasFonts = document.fonts
+  ? sheetReady.then(() => Promise.all([
+    document.fonts.load('700 132px "Barlow Condensed"'), document.fonts.load('600 34px "Barlow Condensed"'), document.fonts.ready,
+  ])).catch(() => {})
+  : Promise.resolve();
+const redraw = () => { fontTextures.forEach(t => t.userData.redraw()); invalidate(); };
+canvasFonts.then(redraw);
+const fontsReady = Promise.race([canvasFonts, new Promise(r => setTimeout(r, 2500))]);
 Promise.all([renderer.compileAsync(scene, camera).catch(() => {}), fontsReady]).then(() => {
   invalidate();
   requestAnimationFrame(() => requestAnimationFrame(() => {
@@ -636,9 +862,10 @@ Promise.all([renderer.compileAsync(scene, camera).catch(() => {}), fontsReady]).
     const loading = $('#loading');
     loading.classList.add('done');
     setTimeout(() => { loading.hidden = true; }, 320);
-    placeInk();
+    placeTabPill();
     placePill();
     document.documentElement.classList.add('ready');
+    if (!helpSeen) showHelp(true);
     prepareOthers();
   }));
 });
