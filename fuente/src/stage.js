@@ -11,8 +11,16 @@ import { HorizontalBlurShader } from 'three/addons/shaders/HorizontalBlurShader.
 import { VerticalBlurShader } from 'three/addons/shaders/VerticalBlurShader.js';
 
 export const stageEl = document.querySelector('#stage');
-const coarse = matchMedia('(pointer: coarse)').matches;
-const maxPR = coarse ? 1.5 : 2;
+export const coarse = matchMedia('(pointer: coarse)').matches;
+
+// Niveles de calidad. `budget` es el máximo de megapíxeles que se dibujan: en un monitor 4K o un
+// celular con pantalla de 3x se baja la resolución interna en vez de ahogar la tarjeta de video.
+export const QUALITY = {
+  alta: { budget: 4.2, maxPR: 2, samples: 4, ao: true, aoMotion: true, aoSamples: 16, shadow: 2048 },
+  media: { budget: 2.4, maxPR: 1.75, samples: 4, ao: true, aoMotion: false, aoSamples: 10, shadow: 2048 },
+  ligera: { budget: 1.3, maxPR: 1.25, samples: 2, ao: false, aoMotion: false, aoSamples: 8, shadow: 1024 },
+};
+const ORDER = ['alta', 'media', 'ligera'];
 
 export const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -226,19 +234,68 @@ class StudioAO extends GTAOPass {
 
 const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
 export const composer = new EffectComposer(renderer, target);
+// Solo el primer búfer necesita antialiasing; el segundo sin multisample ahorra mucha memoria.
+composer.renderTarget2.samples = 0;
 composer.addPass(new RenderPass(scene, camera));
 export const ao = new StudioAO(scene, camera, 1, 1);
 ao.blendIntensity = 1;
-ao.updateGtaoMaterial({ radius: 38, distanceExponent: 1.4, thickness: 12, scale: 1.4, samples: coarse ? 12 : 16, distanceFallOff: 1, screenSpaceRadius: false });
-ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: coarse ? 12 : 16 });
+ao.updateGtaoMaterial({ radius: 38, distanceExponent: 1.4, thickness: 12, scale: 1.4, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
+ao.updatePdMaterial({ lumaPhi: 10, depthPhi: 2, normalPhi: 3, radius: 6, rings: 2, samples: 16 });
 composer.addPass(ao);
 composer.addPass(new OutputPass());
+
+// Calidad inicial según el equipo; si después se traba, baja sola un nivel.
+function detectQuality() {
+  let gpu = '';
+  try {
+    const gl = renderer.getContext(), ext = gl.getExtension('WEBGL_debug_renderer_info');
+    gpu = String(gl.getParameter(ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER));
+  } catch {}
+  if (/swiftshader|llvmpipe|software|basic render/i.test(gpu)) return 'ligera';
+  if (coarse) return navigator.deviceMemory && navigator.deviceMemory <= 2 ? 'ligera' : 'media';
+  if (/intel.*(hd|uhd) graphics/i.test(gpu)) return 'media';
+  return 'alta';
+}
+let saved = null;
+try { saved = localStorage.getItem('visor-calidad'); } catch {}
+export const quality = { name: QUALITY[saved] ? saved : detectQuality(), fixed: !!QUALITY[saved] };
+const qualityHooks = [];
+export const onQuality = fn => qualityHooks.push(fn);
+
+export function setQuality(name, byUser = false) {
+  if (!QUALITY[name]) return;
+  const q = QUALITY[name], prev = QUALITY[quality.name];
+  quality.name = name;
+  if (byUser) {
+    quality.fixed = true;
+    try { localStorage.setItem('visor-calidad', name); } catch {}
+  }
+  if (composer.renderTarget1.samples !== q.samples) {
+    composer.renderTarget1.samples = q.samples;
+    composer.renderTarget1.dispose();
+  }
+  if (key.shadow.mapSize.x !== q.shadow) {
+    key.shadow.mapSize.set(q.shadow, q.shadow);
+    key.shadow.map?.dispose();
+    key.shadow.map = null;
+  }
+  if (prev.aoSamples !== q.aoSamples || !qualityReady) {
+    ao.updateGtaoMaterial({ samples: q.aoSamples });
+    ao.updatePdMaterial({ samples: q.aoSamples });
+  }
+  qualityReady = true;
+  slow = 0;
+  resize();
+  qualityHooks.forEach(fn => fn(name));
+}
+let qualityReady = false;
 
 let size = { w: 1, h: 1 };
 export function resize() {
   const r = stageEl.getBoundingClientRect();
   size = { w: Math.max(1, Math.floor(r.width)), h: Math.max(1, Math.floor(r.height)) };
-  const pr = Math.min(window.devicePixelRatio || 1, maxPR);
+  const q = QUALITY[quality.name];
+  const pr = Math.max(1, Math.min(window.devicePixelRatio || 1, q.maxPR, Math.sqrt((q.budget * 1e6) / (size.w * size.h))));
   renderer.setPixelRatio(pr);
   renderer.setSize(size.w, size.h, false);
   composer.setPixelRatio(pr);
@@ -254,43 +311,69 @@ const resizeHooks = [];
 export const onResize = fn => resizeHooks.push(fn);
 new ResizeObserver(resize).observe(stageEl);
 
-let frames = 0;
+let frames = 0, lastMotion = -1e9;
 export const invalidate = (n = 2) => { frames = Math.max(frames, n); };
-controls.addEventListener('change', () => invalidate());
+controls.addEventListener('change', () => { lastMotion = performance.now(); invalidate(); });
+
+// Si el visor queda fuera de pantalla (en el celular, al bajar al panel), deja de dibujar.
+let onScreen = true;
+new IntersectionObserver(([e]) => { onScreen = e.isIntersecting; if (onScreen) invalidate(); }).observe(stageEl);
+
+// El primer búfer (con antialiasing) siempre recibe la escena; el segundo solo los pasos de después.
+function draw() {
+  if (contact.dirty) renderContact();
+  composer.readBuffer = composer.renderTarget1;
+  composer.writeBuffer = composer.renderTarget2;
+  composer.render();
+}
 
 const hooks = [];
 export const onFrame = fn => hooks.push(fn);
-let last = performance.now();
+let last = performance.now(), wasMoving = false, slow = 0, frameAvg = 16;
 function loop(now) {
-  const dt = Math.min(0.05, (now - last) / 1000);
+  const raw = now - last;
+  const dt = Math.min(0.05, raw / 1000);
   last = now;
   let busy = controls.autoRotate;
   for (const fn of hooks) busy = fn(dt, now) || busy;
   controls.update(dt);
-  if (busy) invalidate(1);
-  if (frames > 0) {
+  if (busy) { lastMotion = now; invalidate(1); }
+  // En movimiento, los equipos modestos se saltan la oclusión ambiental; al soltar se dibuja completa.
+  const q = QUALITY[quality.name], moving = now - lastMotion < 220;
+  ao.enabled = q.ao && (q.aoMotion || !moving);
+  if (wasMoving && !moving) invalidate(2);
+  wasMoving = moving;
+  if (frames > 0 && onScreen) {
     frames--;
-    if (contact.dirty) renderContact();
-    composer.render();
+    draw();
     labelRenderer.render(scene, camera);
+    // Medición de fluidez: si en movimiento va a menos de ~22 cuadros por segundo, baja un nivel.
+    if (moving && raw < 250) {
+      frameAvg = frameAvg * 0.9 + raw * 0.1;
+      slow = frameAvg > 45 ? slow + 1 : 0;
+      const next = ORDER[ORDER.indexOf(quality.name) + 1];
+      if (slow > 45 && next && !quality.fixed) { frameAvg = 16; setQuality(next); }
+    }
   }
   requestAnimationFrame(loop);
 }
 export function start() {
-  resize();
+  setQuality(quality.name);
   requestAnimationFrame(t => { last = t; loop(t); });
 }
 
-// Foto en alta resolución del encuadre actual (sin etiquetas HTML).
-export function capture(longSide = 3200) {
+// Foto en alta resolución del encuadre actual (sin etiquetas HTML). Se limita al máximo que
+// soporta la tarjeta de video; en celular sale más chica para no agotar la memoria.
+export function capture(longSide = coarse ? 1920 : 2560) {
+  longSide = Math.min(longSide, renderer.capabilities.maxTextureSize, 4096);
   const k = longSide / Math.max(size.w, size.h);
   const W = Math.round(size.w * k), H = Math.round(size.h * k);
   renderer.setPixelRatio(1);
   renderer.setSize(W, H, false);
   composer.setPixelRatio(1);
   composer.setSize(W, H);
-  if (contact.dirty) renderContact();
-  composer.render();
+  ao.enabled = QUALITY[quality.name].ao;
+  draw();
   const url = renderer.domElement.toDataURL('image/png');
   resize();
   return url;

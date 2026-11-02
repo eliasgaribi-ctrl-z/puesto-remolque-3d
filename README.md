@@ -23,7 +23,8 @@ Propuesta de diseño en 3D de un **puesto de acero inoxidable** y un **remolque 
 - **Mover piezas**: abrir la puerta del mueble, subir y bajar las tapas de las ventanas, bajar la repisa trasera.
 - **Cambiar acabados**: frente inox o blanco en el puesto; caja blanca, grafito o inox en el remolque.
 - **Cotas** sobre el modelo y tabla de medidas en cm. Las medidas marcadas como *supuesto* se confirman antes de fabricar.
-- **Foto HD**: descarga una imagen en alta resolución de la vista actual.
+- **Foto HD**: descarga una imagen en alta resolución de la vista actual. En el celular abre el menú de compartir (WhatsApp, correo, etc.).
+- **Funciona en laptop y teléfono**: la calidad se ajusta sola al equipo (y baja si se traba); también se puede elegir Alta, Media o Ligera. En el celular se puede usar acostado y en pantalla completa.
 - **Modelo .glb**: descarga el modelo 3D para abrirlo en otros programas.
 
 ## Archivos

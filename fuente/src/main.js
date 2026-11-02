@@ -3,7 +3,7 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   scene, camera, controls, renderer, stageEl, setGrid, applyTheme, fitLight, fitContact, contactDirty,
-  invalidate, onFrame, onResize, start, capture,
+  invalidate, onFrame, onResize, start, capture, quality, setQuality, onQuality, coarse,
 } from './stage.js';
 import { TECH, fontTextures } from './materials.js';
 import { dimMats } from './annot.js';
@@ -97,6 +97,9 @@ function refreshTheme() {
   applyTheme(isDark());
   setGrid(technical, css('--grid-major'), css('--grid'));
   $('#theme')?.setAttribute('aria-label', isDark() ? 'Cambiar a tema claro' : 'Cambiar a tema oscuro');
+  // La barra de estado del celular toma el color del encabezado, también al cambiar de tema a mano.
+  const surface = css('--surface');
+  if (surface) document.querySelectorAll('meta[name="theme-color"]').forEach(m => { m.content = surface; });
   invalidate();
 }
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', refreshTheme);
@@ -335,7 +338,12 @@ $('#show').append(
   switchBtn('sw-etiquetas', 'Etiquetas de áreas', state.labels, v => { state.labels = v; syncVisibility(); }),
   switchBtn('sw-tecnico', 'Modo técnico', false, setTechnical),
   switchBtn('sw-girar', 'Girar solo', false, v => { controls.autoRotate = v; invalidate(); }),
+  segRow('calidad', 'Calidad', [['alta', 'Alta'], ['media', 'Media'], ['ligera', 'Ligera']], quality.name, k => setQuality(k, true)),
 );
+// Si el visor baja la calidad solo (equipo lento), el selector lo refleja.
+onQuality(name => {
+  document.querySelectorAll('#show .mini-seg button').forEach(b => b.setAttribute('aria-pressed', String(b.id === 'calidad-' + name)));
+});
 
 // ---------- Exportar .glb ----------
 function bakeInstances(root) {
@@ -396,7 +404,7 @@ dl.addEventListener('click', async () => {
 });
 
 // ---------- Foto HD ----------
-function photo(longSide = 3200) {
+function photo(longSide) {
   const m = models[state.model], dimsWere = m.dims.visible;
   m.dims.visible = false;
   const url = capture(longSide);
@@ -404,24 +412,69 @@ function photo(longSide = 3200) {
   invalidate();
   return url;
 }
+// Conversión síncrona: el menú de compartir del celular solo abre si se llama durante el toque.
+function dataUrlToBlob(url) {
+  const [head, data] = url.split(','), bin = atob(data), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: head.slice(5, head.indexOf(';')) });
+}
+const canShareFiles = coarse && !!navigator.canShare?.({ files: [new File([''], 'a.png', { type: 'image/png' })] });
 async function savePhoto(btn) {
   btn.disabled = true;
   try {
-    const blob = await (await fetch(photo())).blob();
-    saveBlob(blob, `${FILES[state.model]}-${state.view || 'vista'}.png`);
+    const name = `${FILES[state.model]}-${state.view || 'vista'}.png`;
+    const blob = dataUrlToBlob(photo());
+    if (canShareFiles) {
+      try {
+        await navigator.share({ files: [new File([blob], name, { type: 'image/png' })], title: models[state.model].title });
+        return;
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+      }
+    }
+    saveBlob(blob, name);
   } finally {
     btn.disabled = false;
   }
 }
-for (const b of document.querySelectorAll('[data-photo]')) b.addEventListener('click', () => savePhoto(b));
+for (const b of document.querySelectorAll('[data-photo]')) {
+  b.addEventListener('click', () => savePhoto(b));
+  if (canShareFiles) {
+    b.setAttribute('aria-label', 'Compartir foto en alta resolución');
+    b.title = 'Compartir foto';
+    const label = b.querySelector('.label');
+    if (label) label.textContent = 'Compartir foto';
+  }
+}
 
 // ---------- Pantalla completa ----------
+// En iPhone no existe la pantalla completa para páginas: se simula fijando el visor a toda la pantalla.
 const fsBtn = $('#fullscreen');
-if (stageEl.requestFullscreen) {
-  fsBtn.addEventListener('click', () => (document.fullscreenElement ? document.exitFullscreen() : stageEl.requestFullscreen()));
-  document.addEventListener('fullscreenchange', () => fsBtn.setAttribute('aria-pressed', String(!!document.fullscreenElement)));
-} else {
-  fsBtn.hidden = true;
+const nativeFs = !!(stageEl.requestFullscreen || stageEl.webkitRequestFullscreen);
+const isFs = () => !!(document.fullscreenElement || document.webkitFullscreenElement) || document.body.classList.contains('stage-max');
+function setFs(on) {
+  if (nativeFs) {
+    if (on) (stageEl.requestFullscreen || stageEl.webkitRequestFullscreen).call(stageEl);
+    else (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+  } else {
+    document.body.classList.toggle('stage-max', on);
+    fsBtn.setAttribute('aria-pressed', String(on));
+  }
+}
+fsBtn.addEventListener('click', () => setFs(!isFs()));
+for (const ev of ['fullscreenchange', 'webkitfullscreenchange']) {
+  document.addEventListener(ev, () => fsBtn.setAttribute('aria-pressed', String(isFs())));
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && document.body.classList.contains('stage-max')) setFs(false); });
+
+// ---------- Ayuda táctil ----------
+// En pantallas táctiles se explica el gesto una vez; desaparece al primer toque al modelo.
+const hint = $('#touchHint');
+if (coarse && hint) {
+  hint.hidden = false;
+  const hide = () => hint.classList.add('gone');
+  controls.addEventListener('start', hide, { once: true });
+  setTimeout(hide, 6000);
 }
 
 // Para automatizar renders y exportaciones desde la consola.
