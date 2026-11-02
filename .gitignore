@@ -1,0 +1,7 @@
+# Dependencias y archivos locales
+node_modules/
+.claude/
+original/
+
+# Renders en PNG pesados: en el repo van las versiones JPG
+renders/*.png
