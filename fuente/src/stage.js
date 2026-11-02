@@ -28,6 +28,9 @@ renderer.toneMapping = THREE.NeutralToneMapping;
 renderer.toneMappingExposure = 1;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
+// La sombra no cambia al girar la cámara: se recalcula solo cuando cambia el modelo o se mueve una pieza.
+renderer.shadowMap.autoUpdate = false;
+renderer.shadowMap.needsUpdate = true;
 renderer.domElement.className = 'gl';
 stageEl.prepend(renderer.domElement);
 
@@ -72,7 +75,7 @@ function studioEnvironment() {
   panel(90, 26, 0.75, [8, -14, 72]);
   panel(56, 7, 3, [-18, 32, -72]);
   const pm = new THREE.PMREMGenerator(renderer);
-  const tex = pm.fromScene(env, 0.015).texture;
+  const tex = pm.fromScene(env).texture;
   pm.dispose();
   return tex;
 }
@@ -82,7 +85,7 @@ scene.environment = studioEnvironment();
 function backdrop(inner, outer) {
   const c = document.createElement('canvas');
   c.width = c.height = 512;
-  const g = c.getContext('2d');
+  const g = c.getContext('2d', { willReadFrequently: true });
   const grd = g.createRadialGradient(256, 190, 8, 256, 250, 400);
   grd.addColorStop(0, inner);
   grd.addColorStop(1, outer);
@@ -98,7 +101,10 @@ function backdrop(inner, outer) {
   t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
-const backdrops = { light: backdrop('#fbfcfc', '#cfd5d9'), dark: backdrop('#323a41', '#0d1013') };
+// Se genera solo el fondo del tema que se está usando; el otro, si alguien cambia de tema.
+const BACKDROPS = { light: ['#fbfcfc', '#cfd5d9'], dark: ['#323a41', '#0d1013'] };
+const backdrops = {};
+const backdropFor = k => (backdrops[k] ||= backdrop(...BACKDROPS[k]));
 
 export const key = new THREE.DirectionalLight(0xffffff, 2.6);
 key.castShadow = true;
@@ -170,7 +176,12 @@ export function fitContact(box, height) {
   contact.dirty = true;
   invalidate();
 }
-export const contactDirty = () => { contact.dirty = true; invalidate(); };
+// Algo cambió de lugar (puerta, tapas, bancos, otro modelo): hay que rehacer ambas sombras.
+export const contactDirty = () => {
+  contact.dirty = true;
+  renderer.shadowMap.needsUpdate = true;
+  invalidate();
+};
 
 function renderContact() {
   const hidden = [];
@@ -207,7 +218,7 @@ export function setGrid(on, major = '#9aa3aa', minor = '#c4cacf') {
 }
 
 export function applyTheme(dark) {
-  scene.background = dark ? backdrops.dark : backdrops.light;
+  scene.background = backdropFor(dark ? 'dark' : 'light');
   scene.environmentIntensity = dark ? 0.9 : 1;
   ground.material.opacity = dark ? 0.4 : 0.24;
   contact.plane.material.opacity = dark ? 1 : 0.85;
@@ -221,6 +232,7 @@ export function fitLight(box) {
   key.position.copy(key.target.position).add(new THREE.Vector3(-0.34, 1, 0.42).normalize().multiplyScalar(r * 3));
   Object.assign(key.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: r * 0.5, far: r * 6 });
   key.shadow.camera.updateProjectionMatrix();
+  renderer.shadowMap.needsUpdate = true;
   invalidate();
 }
 
@@ -278,6 +290,7 @@ export function setQuality(name, byUser = false) {
     key.shadow.mapSize.set(q.shadow, q.shadow);
     key.shadow.map?.dispose();
     key.shadow.map = null;
+    renderer.shadowMap.needsUpdate = true;
   }
   if (prev.aoSamples !== q.aoSamples || !qualityReady) {
     ao.updateGtaoMaterial({ samples: q.aoSamples });

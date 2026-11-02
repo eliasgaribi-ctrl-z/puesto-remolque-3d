@@ -26,8 +26,9 @@ export const fontTextures = [];
 
 // Veta de inox cepillado: renglones independientes suavizados a lo largo de x (se repite sin costura).
 // Va en el canal G (rugosidad); R y B en blanco para que el .glb no altere el metalizado.
-const brushed = canvasTex(512, 512, (g, w, h) => {
-  const img = g.createImageData(w, h), r = rng(11), win = 48;
+// La veta corre en horizontal: basta la mitad de resolución a lo ancho, y se genera el doble de rápido.
+const brushed = canvasTex(256, 512, (g, w, h) => {
+  const img = g.createImageData(w, h), r = rng(11), win = 24;
   for (let y = 0; y < h; y++) {
     const row = r(), raw = new Float32Array(w);
     for (let x = 0; x < w; x++) raw[x] = r();

@@ -5,3 +5,6 @@ original/
 
 # Renders en PNG pesados: en el repo van las versiones JPG
 renders/*.png
+
+# Lo que guarda el servidor de pruebas
+salida/

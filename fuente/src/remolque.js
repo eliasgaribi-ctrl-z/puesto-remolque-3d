@@ -72,8 +72,9 @@ export function buildRemolque() {
   box(flap, -(h1 - h0) / 2 - 2, -(f1 - f0) - 3, -0.8, (h1 - h0) / 2 + 2, 0, 0.8, body, { role: 'body', r: 0.6 });
   box(flap, -(h1 - h0) / 2 - 2, -(f1 - f0) - 3, 0.8, (h1 - h0) / 2 + 2, -(f1 - f0) - 1, 2, M.inox, { r: 0.5 });
   R.movers.push({ id: 'ventanas', obj: flap, axis: 'x', open: -72 * DEG, closed: 0, state: 1, target: 1 });
-  // Pistones de gas que sostienen la tapa.
-  const struts = [-1, 1].map(sd => ({ sd, m: rod(g, V(0, 0, 0), V(0, 1, 0), 0.6, M.tube, { cast: false }) }));
+  // Pistones de gas que sostienen la tapa. Se recolocan cada cuadro: no se unen con otras piezas.
+  const dynamic = m => { m.userData.dynamic = true; return m; };
+  const struts = [-1, 1].map(sd => ({ sd, m: dynamic(rod(g, V(0, 0, 0), V(0, 1, 0), 0.6, M.tube, { cast: false })) }));
   const tip = new THREE.Vector3();
   R.tick.push(() => {
     flap.updateMatrix();
@@ -128,7 +129,7 @@ export function buildRemolque() {
   box(shelf, 2.2, sd - 2.5, -sw / 2, 3.4, sd, sw / 2, M.inox, { r: 0.4 });
   for (const k of [-1, 1]) cyl(g, 1.6, 3, M.tube, t + 1.5, sy, n / 2 + k * (sw / 2 - 6), 'z', 16);
   R.movers.push({ id: 'repisa', obj: shelf, axis: 'z', open: -90 * DEG, closed: 0, state: 1, target: 1 });
-  const chains = [-1, 1].map(k => ({ k, m: rod(g, V(0, 0, 0), V(0, 1, 0), 0.45, M.tube, { cast: false }) }));
+  const chains = [-1, 1].map(k => ({ k, m: dynamic(rod(g, V(0, 0, 0), V(0, 1, 0), 0.45, M.tube, { cast: false })) }));
   const end = new THREE.Vector3();
   R.tick.push(() => {
     shelf.updateMatrix();

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeStatic, edgesFor } from './merge.js';
 import {
   scene, camera, controls, renderer, stageEl, setGrid, applyTheme, fitLight, fitContact, contactDirty,
   invalidate, onFrame, onResize, start, capture, quality, setQuality, onQuality, coarse,
@@ -14,13 +15,16 @@ const $ = s => document.querySelector(s);
 const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const ease = x => (x < 0.5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2);
 
-const models = { puesto: buildPuesto(), remolque: buildRemolque() };
+// Cada modelo se construye cuando se necesita: al abrir solo se arma el que se ve, y el otro
+// se prepara después, en un momento libre, para que cambiar de pestaña sea inmediato.
+const builders = { puesto: buildPuesto, remolque: buildRemolque };
+const models = {};
 const original = new WeakMap(), edges = new WeakMap();
 let technical = false;
 
-for (const m of Object.values(models)) {
-  scene.add(m.root);
-  m.geo.traverse(o => { if (o.isMesh) original.set(o, o.material); });
+function ensureModel(key) {
+  if (models[key]) return models[key];
+  const m = builders[key]();
   m.movers.forEach(applyMover);
   m.tick.forEach(fn => fn());
   const b = new THREE.Box3().setFromObject(m.geo), c = b.getCenter(new THREE.Vector3());
@@ -28,6 +32,7 @@ for (const m of Object.values(models)) {
   m.root.updateMatrixWorld(true);
   m.box = new THREE.Box3().setFromObject(m.geo).expandByScalar(25);
   // Esquinas de cada pieza: encuadra la silueta real, no la caja que envuelve todo.
+  // Se calcula antes de unir piezas, cuando todavía están separadas.
   m.hull = [];
   const pb = new THREE.Box3();
   m.geo.traverse(o => {
@@ -35,7 +40,16 @@ for (const m of Object.values(models)) {
     pb.setFromObject(o);
     for (const x of [pb.min.x, pb.max.x]) for (const y of [pb.min.y, pb.max.y]) for (const z of [pb.min.z, pb.max.z]) m.hull.push(new THREE.Vector3(x, y, z));
   });
+  mergeStatic(m.geo);
+  m.geo.traverse(o => { if (o.isMesh) original.set(o, o.material); });
   m.onHotspot = spot => focusArea(m, spot);
+  // Las etiquetas HTML no heredan lo oculto del modelo: se esconden una por una hasta mostrarlo.
+  m.root.visible = false;
+  m.root.traverse(o => { if (o.isCSS2DObject) o.visible = false; });
+  scene.add(m.root);
+  models[key] = m;
+  if (technical) applyTechnical(m, true);
+  return m;
 }
 
 const state = { model: 'puesto', view: 'iso', dims: false, labels: true, area: null };
@@ -66,22 +80,23 @@ function setFinish(m, key) {
 }
 
 // ---------- Modo técnico: maqueta blanca con aristas ----------
-function setTechnical(on) {
-  technical = on;
-  for (const m of Object.values(models)) m.geo.traverse(o => {
+function applyTechnical(m, on) {
+  m.geo.traverse(o => {
     if (!o.isMesh) return;
     const base = original.get(o), glass = base?.userData?.glass;
     o.material = on ? (glass ? TECH.glass : TECH.solid) : base;
     if (on && !edges.has(o) && !glass && !o.isInstancedMesh) {
-      const b = o.geometry.userData.box;
-      const eg = b ? new THREE.EdgesGeometry(new THREE.BoxGeometry(...b)) : new THREE.EdgesGeometry(o.geometry, 28);
-      const line = new THREE.LineSegments(eg, TECH.edge);
+      const line = new THREE.LineSegments(edgesFor(o), TECH.edge);
       line.raycast = () => {};
       o.add(line);
       edges.set(o, line);
     }
     if (edges.has(o)) edges.get(o).visible = on;
   });
+}
+function setTechnical(on) {
+  technical = on;
+  for (const m of Object.values(models)) applyTechnical(m, on);
   refreshTheme();
 }
 
@@ -178,6 +193,7 @@ onFrame((dt, now) => {
     busy = true;
   }
   const m = models[state.model];
+  if (!m) return busy;
   for (const mv of m.movers) {
     if (mv.state === mv.target) continue;
     const step = dt / 0.9;
@@ -274,7 +290,7 @@ function renderPanel() {
   for (const a of m.actions) {
     if (a.type === 'seg') acts.appendChild(segRow(a.id, a.label, a.options, m.finish, k => setFinish(m, k)));
     else if (a.mover) acts.appendChild(switchBtn(a.id, a.label, moverOn(m, a.mover), v => setMover(m, a.mover, v)));
-    else acts.appendChild(switchBtn(a.id, a.label, a.get(), v => { a.set(v); invalidate(); }));
+    else acts.appendChild(switchBtn(a.id, a.label, a.get(), v => { a.set(v); contactDirty(); }));
   }
   const areas = $('#areas');
   areas.innerHTML = '';
@@ -314,13 +330,13 @@ function renderPanel() {
 }
 
 function showModel(key, instant = false) {
-  if (!models[key]) key = 'puesto';
+  if (!builders[key]) key = 'puesto';
+  const m = ensureModel(key);
   state.model = key;
   state.area = null;
-  for (const m of Object.values(models)) for (const h of m.hotspots) h.el.classList.remove('on');
+  for (const x of Object.values(models)) for (const h of x.hotspots) h.el.classList.remove('on');
   syncVisibility();
   renderPanel();
-  const m = models[key];
   fitLight(m.box);
   fitContact(m.box, key === 'remolque' ? 190 : 140);
   goView(m, m.views[0], instant ? 0 : 900);
@@ -330,7 +346,7 @@ $('#tab-puesto').addEventListener('click', () => showModel('puesto'));
 $('#tab-remolque').addEventListener('click', () => showModel('remolque'));
 window.addEventListener('hashchange', () => {
   const k = location.hash.slice(1);
-  if (models[k] && k !== state.model) showModel(k);
+  if (builders[k] && k !== state.model) showModel(k);
 });
 
 $('#show').append(
@@ -361,15 +377,17 @@ function bakeInstances(root) {
     im.parent.remove(im);
   }
 }
+// Se exporta una copia recién armada, sin unir piezas: el .glb reutiliza las piezas repetidas
+// y pesa mucho menos. Se le copian el estado de puertas y tapas, los bancos y el acabado elegido.
 function exportGLB(key) {
   return new Promise((resolve, reject) => {
-    const m = models[key], wasTech = technical;
-    if (wasTech) setTechnical(false);
-    const copy = m.geo.clone(true);
-    if (wasTech) setTechnical(true);
-    const lines = [];
-    copy.traverse(o => { if (o.isLine || o.isLineSegments) lines.push(o); });
-    lines.forEach(o => o.parent.remove(o));
+    const m = ensureModel(key), fresh = builders[key]();
+    fresh.movers.forEach((mv, i) => { mv.state = m.movers[i].state; applyMover(mv); });
+    fresh.tick.forEach(fn => fn());
+    if (m.stools) fresh.stools.visible = m.stools.visible;
+    const finish = m.finishMats[m.finish];
+    fresh.geo.traverse(o => { if (o.isMesh && o.userData.role === m.finishRole) o.material = finish; });
+    const copy = fresh.geo;
     bakeInstances(copy);
     const out = new THREE.Group();
     out.name = key;
@@ -484,13 +502,23 @@ window.__studio = {
   view: id => { const m = models[state.model]; goView(m, m.views.find(v => v.id === id) || m.views[0], 0); },
   show: showModel,
   set: (id, v) => { const b = document.getElementById(id); if (b && (b.getAttribute('aria-pressed') === 'true') !== v) b.click(); },
+  // Piezas y triángulos que dibuja el modelo visible en una pasada (diagnóstico de rendimiento).
+  stats: () => {
+    renderer.info.autoReset = false;
+    renderer.info.reset();
+    renderer.render(scene, camera);
+    const { calls, triangles } = renderer.info.render;
+    renderer.info.autoReset = true;
+    invalidate();
+    return { model: state.model, calls, triangles, built: Object.keys(models) };
+  },
 };
 
 // ---------- Arranque ----------
 refreshTheme();
 start();
 const first = location.hash.slice(1);
-showModel(models[first] ? first : 'puesto', true);
+showModel(builders[first] ? first : 'puesto', true);
 // Si la pantalla cambia de proporción (girar el celular), se reencuadra la vista activa.
 onResize(() => {
   const m = models[state.model], v = m.views.find(x => x.id === state.view);
@@ -503,5 +531,20 @@ Promise.all([renderer.compileAsync(scene, camera).catch(() => {}), fontsReady]).
   requestAnimationFrame(() => requestAnimationFrame(() => {
     $('#loading').hidden = true;
     document.documentElement.classList.add('ready');
+    prepareOthers();
   }));
 });
+
+// El otro modelo se arma cuando el equipo está libre, con sus materiales ya compilados.
+function prepareOthers() {
+  const idle = window.requestIdleCallback || (fn => setTimeout(fn, 1500));
+  idle(() => {
+    for (const k of Object.keys(builders)) {
+      if (models[k]) continue;
+      const m = ensureModel(k);
+      m.root.visible = true;
+      renderer.compileAsync(m.root, camera, scene).catch(() => {});
+      m.root.visible = false;
+    }
+  }, { timeout: 5000 });
+}
